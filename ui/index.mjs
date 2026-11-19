@@ -704,8 +704,6 @@ export default function SILocalInferencingApp() {
       className: "zli-root px-6 pt-4 pb-8",
       style: {
         paddingBottom: barVisible || persistOn ? 76 : 48, // room for the bar (page-local or persistent)
-        maxWidth: 1100,
-        margin: "0 auto",
       },
     },
     h(NeonStyles),
