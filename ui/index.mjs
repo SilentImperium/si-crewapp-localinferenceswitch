@@ -932,6 +932,15 @@ export default function SILocalInferencingApp() {
             {
               key: "new-tile",
               className: "zli-card",
+              role: "button",
+              tabIndex: 0,
+              onClick: () => setEditing("new"),
+              onKeyDown: (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  setEditing("new")
+                }
+              },
               style: {
                 border: "1px dashed rgba(34,211,238,.4)",
                 borderRadius: 14,
