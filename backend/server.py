@@ -49,7 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-APP_NAME = os.environ.get("KIROCREW_APP_NAME", "si-crewapp-LocalInferenceSwitch")
+APP_NAME = os.environ.get("KIROCREW_APP_NAME", "si-crewapp-localinferenceswitch")
 APP_VERSION = "0.1.0"
 PROXY_SECRET = os.environ.get("KIROCREW_PROXY_SECRET", "")
 MAX_SKEW_S = 60

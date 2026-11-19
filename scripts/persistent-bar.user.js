@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         SI Local Inference Switch — persistent bar (Kiro Crew)
-// @namespace    silent-imperium.org/kirocrew/si-crewapp-LocalInferenceSwitch
+// @namespace    silent-imperium.org/kirocrew/si-crewapp-localinferenceswitch
 // @version      0.1.0
 // @description  Optional companion for the SI Local Inference Switch app: keeps the
 //               persistent bottom bar alive across FULL page loads of the
@@ -17,7 +17,7 @@
 
   const FLAG = "zli.persistBar"
   const BAR_ID = "zli-pbar"
-  const SRC = "/apps/si-crewapp-LocalInferenceSwitch/ui/bar.mjs"
+  const SRC = "/apps/si-crewapp-localinferenceswitch/ui/bar.mjs"
 
   function inject() {
     let on = false

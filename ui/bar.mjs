@@ -18,7 +18,7 @@
 //   1. `import "./bar.mjs"` from index.mjs / panel.mjs — the app page's
 //      "everywhere" toggle flips the flag.
 //   2. scripts/persistent-bar.user.js injects
-//      <script type="module" src="/apps/si-crewapp-LocalInferenceSwitch/ui/bar.mjs">
+//      <script type="module" src="/apps/si-crewapp-localinferenceswitch/ui/bar.mjs">
 //      on full page loads (closes the reload gap: the app bundles only load
 //      when the app page or side panel is opened).
 //
@@ -37,7 +37,7 @@ import { getState, subscribeLogs, fmtDur } from "./lib.mjs"
 const FLAG_KEY = "zli.persistBar"
 const FLAG_EVENT = "zli:persist-flag"
 const BAR_ID = "zli-pbar"
-const APP_ROUTE = "/apps/si-crewapp-LocalInferenceSwitch"
+const APP_ROUTE = "/apps/si-crewapp-localinferenceswitch"
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 
 let root = null // <div id="zli-pbar">

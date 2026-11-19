@@ -1,5 +1,5 @@
 {
-  "name": "si-crewapp-LocalInferenceSwitch",
+  "name": "si-crewapp-localinferenceswitch",
   "version": "0.1.0",
   "displayName": "SI Local Inference Switch",
   "description": "Managed shell-command runner for the machine Kiro Crew runs on: define command profiles (like your ninfer-serve line), start/stop them, watch live output, and cycle the local LLM backend without touching Kiro Crew.",
@@ -14,7 +14,7 @@
     "entry": "index.mjs",
     "pages": [
       {
-        "route": "/apps/si-crewapp-LocalInferenceSwitch",
+        "route": "/apps/si-crewapp-localinferenceswitch",
         "label": "SI Local Inference Switch",
         "icon": "Cpu"
       }
@@ -28,8 +28,8 @@
   },
   "permissions": {
     "api": [
-      "/apps/si-crewapp-LocalInferenceSwitch/api",
-      "/apps/si-crewapp-LocalInferenceSwitch/api/*"
+      "/apps/si-crewapp-localinferenceswitch/api",
+      "/apps/si-crewapp-localinferenceswitch/api/*"
     ]
   },
   "contributes": {

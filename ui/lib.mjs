@@ -5,7 +5,7 @@
 // dashboard session cookie; the gateway HMAC-signs and proxies to the app
 // backend. Plain fetch - no host SDK needed.
 
-const APP = "si-crewapp-LocalInferenceSwitch"
+const APP = "si-crewapp-localinferenceswitch"
 
 export const apiPath = (p) => `/apps/${APP}/api/${p}`
 
