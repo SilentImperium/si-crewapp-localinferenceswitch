@@ -116,11 +116,11 @@ export default function NinferLogPanel() {
           alignItems: "center",
           gap: 8,
           padding: "8px 12px",
-          borderBottom: "1px solid rgba(148,163,184,.2)",
+          borderBottom: "1px solid rgba(34,211,238,.25)",
           fontSize: 12,
         },
       },
-      h(Terminal, { size: 13, style: { color: "#94a3b8", flexShrink: 0 } }),
+      h(Terminal, { size: 13, style: { color: "#67e8f9", flexShrink: 0 } }),
       h(
         "span",
         {
@@ -129,18 +129,19 @@ export default function NinferLogPanel() {
             height: 8,
             borderRadius: "50%",
             background: tone,
+            boxShadow: `0 0 6px ${tone}cc, 0 0 14px ${tone}55`,
             display: "inline-block",
             flexShrink: 0,
           },
         }
       ),
-      h("span", { style: { fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+      h("span", { style: { fontWeight: 600, flex: 1, color: "#e2e8f0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
         proc.running
           ? proc.profile_name || "process"
           : lastProfile
           ? `${lastProfile.name} (stopped)`
           : "nothing running"),
-      proc.running && h("span", { style: { opacity: 0.7, whiteSpace: "nowrap" } }, fmtDur(uptime)),
+      proc.running && h("span", { style: { color: "#64748b", whiteSpace: "nowrap" } }, fmtDur(uptime)),
       proc.running
         ? h(
             "button",
@@ -156,6 +157,7 @@ export default function NinferLogPanel() {
                 background: "rgba(248,113,113,.1)",
                 color: "#f87171",
                 border: "1px solid rgba(248,113,113,.35)",
+                boxShadow: "0 0 14px rgba(248,113,113,.18)",
               },
               disabled: busy,
               onClick: doStop,
@@ -178,6 +180,7 @@ export default function NinferLogPanel() {
                 background: "rgba(52,211,153,.12)",
                 color: "#34d399",
                 border: "1px solid rgba(52,211,153,.4)",
+                boxShadow: "0 0 14px rgba(52,211,153,.25)",
               },
               disabled: busy,
               onClick: doStart,
@@ -199,7 +202,8 @@ export default function NinferLogPanel() {
           fontFamily: MONO,
           fontSize: 11.5,
           lineHeight: 1.5,
-          color: "#d1e0f0",
+          color: "#94a3b8",
+          background: "rgba(2,6,23,.5)",
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
         },

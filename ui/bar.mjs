@@ -67,10 +67,11 @@ function el(tag, style, text) {
   return n
 }
 
+// Neon ghost button (matches the AIDLC theme the app page uses).
 const BTN = {
-  background: "rgba(148,163,184,.08)",
-  color: "#cbd5e1",
-  border: "1px solid rgba(148,163,184,.25)",
+  background: "rgba(34,211,238,.04)",
+  color: "#a5f3fc",
+  border: "1px solid rgba(34,211,238,.35)",
   padding: "3px 10px",
   borderRadius: 6,
   cursor: "pointer",
@@ -78,7 +79,22 @@ const BTN = {
   fontFamily: MONO,
 }
 
+// The bar is a plain-DOM module (it can load standalone via the userscript
+// path), so its one animation keyframe is injected as a tiny <style> tag.
+// Scoped `zli-bar-*` names, reduced-motion respected.
+function ensurePulseStyle() {
+  if (document.getElementById("zli-pbar-style")) return
+  const s = document.createElement("style")
+  s.id = "zli-pbar-style"
+  s.textContent =
+    "@keyframes zli-bar-dot-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.45)}}" +
+    ".zli-bar-dot-pulse{animation:zli-bar-dot-pulse 1.6s ease-in-out infinite}" +
+    "@media (prefers-reduced-motion:reduce){.zli-bar-dot-pulse{animation:none!important}}"
+  document.head.appendChild(s)
+}
+
 function makeBar() {
+  ensurePulseStyle()
   root = el(
     "div",
     {
@@ -91,15 +107,30 @@ function makeBar() {
       alignItems: "center",
       gap: 10,
       padding: "8px 14px",
-      background: "rgba(10,14,23,.97)",
-      borderTop: "1px solid rgba(148,163,184,.25)",
+      background: "rgba(5,7,18,.97)",
+      borderTop: "1px solid rgba(34,211,238,.35)",
+      boxShadow: "0 -8px 24px rgba(34,211,238,.12)",
       fontFamily: MONO,
       fontSize: 12,
-      color: "#cbd5e1",
+      color: "#94a3b8",
       boxSizing: "border-box",
     }
   )
   root.id = BAR_ID
+
+  // neon top line (the AIDLC cards' signature gradient edge)
+  root.appendChild(
+    el("div", {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 2,
+      background: "linear-gradient(90deg, transparent, #22d3ee 30%, #a855f7 70%, transparent)",
+      boxShadow: "0 0 14px rgba(34,211,238,.8)",
+      pointerEvents: "none",
+    })
+  )
 
   els = {
     dot: el("span", {
@@ -107,17 +138,18 @@ function makeBar() {
       height: 9,
       borderRadius: "50%",
       background: "#6b7280",
+      boxShadow: "0 0 7px #6b7280cc, 0 0 16px #6b728055",
       display: "inline-block",
       flexShrink: 0,
     }),
-    name: el("span", { fontWeight: 600, whiteSpace: "nowrap" }, "…"),
-    meta: el("span", { whiteSpace: "nowrap", opacity: 0.7 }),
+    name: el("span", { fontWeight: 600, whiteSpace: "nowrap", color: "#e2e8f0" }, "…"),
+    meta: el("span", { whiteSpace: "nowrap", color: "#64748b" }),
     line: el("span", {
       flex: 1,
       overflow: "hidden",
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
-      opacity: 0.85,
+      color: "#94a3b8",
     }),
   }
 
@@ -291,15 +323,19 @@ function render() {
       ? stateCache.now - proc.started_at
       : 0
 
-  els.dot.style.background = apiDown
+  const dotTone = apiDown
     ? "#f87171"
     : proc.running
     ? proc.attached === false
       ? "#fbbf24"
       : "#34d399"
     : "#6b7280"
+  els.dot.style.background = dotTone
+  els.dot.style.boxShadow = `0 0 7px ${dotTone}cc, 0 0 16px ${dotTone}55`
+  // live dot pulses while a process is running (static when idle / offline)
+  els.dot.classList.toggle("zli-bar-dot-pulse", !apiDown && proc.running)
   root.style.borderTopColor =
-    !apiDown && proc.running ? "rgba(52,211,153,.5)" : "rgba(148,163,184,.25)"
+    !apiDown && proc.running ? "rgba(52,211,153,.5)" : "rgba(34,211,238,.35)"
 
   if (apiDown) {
     els.name.textContent = "backend offline"
