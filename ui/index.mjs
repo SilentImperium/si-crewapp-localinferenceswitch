@@ -1,4 +1,4 @@
-// SI Local Inferencing - dashboard page bundle.
+// SI Local Inference Switch - dashboard page bundle.
 //
 // Hand-written ESM (no build step): the Kiro Crew host loads this module and
 // renders the default-exported component. React, lucide-react and the app SDK
@@ -530,9 +530,9 @@ export default function SILocalInferencingApp() {
         },
       },
         h(Cpu, { size: 18 }),
-        h("span", { style: { fontSize: 13, fontWeight: 600 } }, "local inferencing")),
+        h("span", { style: { fontSize: 13, fontWeight: 600 } }, "local inference switch")),
       h("div", { style: { flex: 1 } },
-        h("h1", { className: "text-2xl font-bold tracking-tight" }, "SI Local Inferencing"),
+        h("h1", { className: "text-2xl font-bold tracking-tight" }, "SI Local Inference Switch"),
         h("p", { className: "text-sm text-muted", style: { marginTop: 2 } },
           "Managed shell-command runner — start/stop your local LLM backend and watch its live output.")),
       h(

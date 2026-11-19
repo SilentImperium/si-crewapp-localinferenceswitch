@@ -1,4 +1,4 @@
-// SI Local Inferencing - "Ninfer Log" side-panel tab bundle.
+// SI Local Inference Switch - "Ninfer Log" side-panel tab bundle.
 //
 // A compact live view of the managed process: status dot, profile name,
 // uptime, a small stop/start button, and the scrolling output. Hand-written

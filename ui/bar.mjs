@@ -1,4 +1,4 @@
-// SI Local Inferencing — persistent bottom bar ("show everywhere" mode).
+// SI Local Inference Switch — persistent bottom bar ("show everywhere" mode).
 //
 // Plain-DOM ES module (no React, no build step). When its flag is on it
 // mounts a full-width bar on document.body, pinned to the bottom of the
@@ -18,7 +18,7 @@
 //   1. `import "./bar.mjs"` from index.mjs / panel.mjs — the app page's
 //      "everywhere" toggle flips the flag.
 //   2. scripts/persistent-bar.user.js injects
-//      <script type="module" src="/apps/si-local-inferencing/ui/bar.mjs">
+//      <script type="module" src="/apps/si-crewapp-LocalInferenceSwitch/ui/bar.mjs">
 //      on full page loads (closes the reload gap: the app bundles only load
 //      when the app page or side panel is opened).
 //
@@ -37,7 +37,7 @@ import { getState, subscribeLogs, fmtDur } from "./lib.mjs"
 const FLAG_KEY = "zli.persistBar"
 const FLAG_EVENT = "zli:persist-flag"
 const BAR_ID = "zli-pbar"
-const APP_ROUTE = "/apps/si-local-inferencing"
+const APP_ROUTE = "/apps/si-crewapp-LocalInferenceSwitch"
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 
 let root = null // <div id="zli-pbar">
@@ -122,7 +122,7 @@ function makeBar() {
   }
 
   const openBtn = el("button", { ...BTN }, "Open app")
-  openBtn.title = "Open the SI Local Inferencing page"
+  openBtn.title = "Open the SI Local Inference Switch page"
   openBtn.addEventListener("click", () => {
     window.location.assign(APP_ROUTE)
   })

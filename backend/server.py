@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SI Local Inferencing - Kiro Crew app backend.
+"""SI Local Inference Switch - Kiro Crew app backend.
 
 A managed shell-command runner. The dashboard defines named *profiles*
 (verbatim shell command + working dir + env + shell mode) and this backend
@@ -49,7 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-APP_NAME = os.environ.get("KIROCREW_APP_NAME", "si-local-inferencing")
+APP_NAME = os.environ.get("KIROCREW_APP_NAME", "si-crewapp-LocalInferenceSwitch")
 APP_VERSION = "0.1.0"
 PROXY_SECRET = os.environ.get("KIROCREW_PROXY_SECRET", "")
 MAX_SKEW_S = 60
