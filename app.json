@@ -1,6 +1,6 @@
 {
   "name": "si-crewapp-localinferenceswitch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "SI Local Inference Switch",
   "description": "Managed shell-command runner for the machine Kiro Crew runs on: define command profiles (like your ninfer-serve line), start/stop them, watch live output, and cycle the local LLM backend without touching Kiro Crew.",
   "author": "Silent Imperium",

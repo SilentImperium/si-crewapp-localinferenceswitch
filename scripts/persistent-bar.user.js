@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SI Local Inference Switch — persistent bar (Kiro Crew)
 // @namespace    silent-imperium.org/kirocrew/si-crewapp-localinferenceswitch
-// @version      0.1.0
+// @version      0.2.0
 // @description  Optional companion for the SI Local Inference Switch app: keeps the
 //               persistent bottom bar alive across FULL page loads of the
 //               Kiro Crew dashboard. The bar itself is the app's own
