@@ -9,7 +9,10 @@ import {
   startProcess,
   stopProcess,
   subscribeLogs,
+  startMetricsPoll,
   fmtDur,
+  fmtNum,
+  fmtTps,
 } from "./lib.mjs"
 
 // Side-effect import: keeps the persistent "everywhere" bar alive for users
@@ -28,9 +31,15 @@ export default function NinferLogPanel() {
   const [lines, setLines] = useState([])
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
+  const [metrics, setMetrics] = useState(null)
 
   const logRef = useRef(null)
   const lastSeq = useRef(0)
+
+  useEffect(() => {
+    const sub = startMetricsPoll(setMetrics, 2500)
+    return () => sub.close()
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -83,7 +92,11 @@ export default function NinferLogPanel() {
   const doStop = () => {
     setBusy(true)
     stopProcess(8000)
-      .then(refresh)
+      .then((r) => {
+        if (r && r.stopped === false && r.running)
+          setError(`stop failed: service still running (pid ${r.pid})`)
+        refresh()
+      })
       .catch((e) => setError(e.message || String(e)))
       .finally(() => setBusy(false))
   }
@@ -189,6 +202,54 @@ export default function NinferLogPanel() {
             "Start"
           )
         : null
+    ),
+    // compact metrics strip (avg tok/s · model · lifetime tokens)
+    h(
+      "div",
+      {
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "4px 12px",
+          borderBottom: "1px solid rgba(34,211,238,.12)",
+          fontSize: 11,
+          fontFamily: MONO,
+          color: "#64748b",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+        },
+      },
+      metrics
+        ? metrics.ok
+          ? h(
+              "span",
+              {
+                style: { color: "#67e8f9", whiteSpace: "nowrap" },
+                title: "avg decode throughput (EMA) from the ninfer metrics collector",
+              },
+              `${fmtTps(
+                (metrics.throughput || {}).decode_tps_avg != null
+                  ? (metrics.throughput || {}).decode_tps_avg
+                  : (metrics.throughput || {}).decode_tps
+              )} tok/s`
+            )
+          : h("span", { style: { color: "#f87171", whiteSpace: "nowrap" } }, "ninfer offline")
+        : h("span", { style: { color: "#64748b", whiteSpace: "nowrap" } }, "…"),
+      metrics &&
+        metrics.ok &&
+        metrics.model &&
+        metrics.model.name &&
+        h("span", { style: { color: "#e2e8f0", whiteSpace: "nowrap" } }, metrics.model.name),
+      h("span", { style: { flex: 1 } }),
+      metrics &&
+        metrics.ok &&
+        metrics.tokens &&
+        h(
+          "span",
+          { style: { whiteSpace: "nowrap" }, title: "lifetime prompt + generation tokens" },
+          `${fmtNum((metrics.tokens || {}).total)} tok lifetime`
+        )
     ),
     h(
       "pre",

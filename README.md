@@ -13,14 +13,25 @@ command line plus a working directory, extra environment and a shell mode.
 ## What it does
 
 - **Profiles** — named, editable command definitions: `command`, `cwd`,
-  `env`, `shell`. Add as many as you like.
+  `env`, `shell`, and an optional `port` (auto-read from `--port` in the
+  command when unset; used to detect the service and verify stops). Add as
+  many as you like.
 - **Know what's loaded** — the profile that is running is badged **RUNNING**
   (and its pid/uptime show in the header and bottom bar); the most recently
   started one is badged **LAST LOADED** when nothing is running.
 - **Start / stop / cycle** — one process at a time. Start on a different
   profile while one runs offers to stop the current one first (that's the
   backend-swap workflow). Stop sends SIGTERM to the whole process group,
-  waits 8 s, then SIGKILL.
+  waits 8 s, then SIGKILL — and then *verifies*: the group must be gone and,
+  when the profile has a port, that port must be free. Stragglers (e.g. a
+  worker that escaped the group via `setsid`) are killed individually and
+  re-checked. If anything is still alive, the app keeps tracking it and
+  reports **still running** instead of claiming success.
+- **Finds what's already running** — a service started outside the app
+  (e.g. your `run_ninfer_swift15.sh`) is detected via the profile's port (or
+  a `.ninfer` model marker in the command line), shown as an amber
+  **outside app** chip, and Stop adopts and stops it. After a backend
+  restart, a still-running managed process is re-adopted from `run.json`.
 - **Live output** — everything the process prints (stdout + stderr merged) is
   captured and streamed (SSE with an automatic 2 s polling fallback) to:
   - the app page's **Live output** panel,
@@ -32,6 +43,48 @@ command line plus a working directory, extra environment and a shell mode.
   - the **Ninfer Log** side-panel tab, so the output is visible from anywhere
     in the dashboard.
 - **Exit tracking** — the last exit (code or signal) and time are persisted.
+- **Live dashboard** — the app page's top shows a real-time view of the
+  running ninfer service (throughput + sparkline, token ledgers, requests,
+  spec decode, memory), fed by the service's own Prometheus `/metrics`
+  endpoint; see [Live dashboard](#live-dashboard).
+
+## Live dashboard
+
+The app page's top carries a live dashboard of the ninfer service, fed by
+the service's own Prometheus `/metrics` endpoint (the profile's port,
+default 1234). The service sends no CORS headers, so the browser can't
+fetch it directly: the app's backend polls `/metrics` every 3 s in a
+background thread and serves a consolidated snapshot at
+`GET /api/metrics`. The UI — the app page, the persistent bottom bar, and
+the Ninfer Log side panel — polls that endpoint every 2.5 s, on the same
+cadence as the existing state polling.
+
+**What it shows:**
+
+- **Throughput** — current decode tok/s, the EMA average, total
+  (prompt + decode) tok/s, and a ~7-minute sparkline. Rates are
+  counter-deltas between ticks, so they survive counter resets and model
+  restarts (a reset just re-baselines the delta).
+- **Tokens** — lifetime prompt / generation / total counters, the prompt
+  cache hit rate, the current session's totals (re-baselined when the
+  model (re)starts), and a per-model ledger: prompt / generation / total
+  for each model name seen, with its spec backend.
+- **Requests** — running vs max concurrency, waiting, completed,
+  failed / cancelled / rejected, and average TTFT, duration, and queue
+  time.
+- **Spec decode + memory** — acceptance rate and per-draft-position
+  acceptance bars (when speculative decoding is enabled), device
+  allocation vs budget (weights vs KV), and host-pinned KV.
+
+When the service is down the dashboard shows a single **NINFER OFFLINE**
+card with the reason (no service running, no known port, or unreachable)
+and reconnects automatically when the service comes back. The persistent
+bottom bar and the Ninfer Log side panel show a compact "avg tok/s ·
+model" chip / strip from the same endpoint.
+
+**Data files.** The per-model ledger is persisted to `data/usage.json`
+(atomic writes), so lifetime token counts survive backend restarts. The
+in-memory rate history holds ~200 samples (10 min) and is not persisted.
 
 ## Persistent bottom bar (everywhere)
 
@@ -108,6 +161,11 @@ paste it straight in. Kiro Crew's dashboard keeps working normally while
 ninfer runs or restarts — the app is a separate backend process; the only
 shared resource is the GPU.
 
+The service port is read from `--port 1234` in the command (or set it
+explicitly in the profile form). That's how the app detects a ninfer you
+started outside the app — and how it verifies a stop actually freed the
+port.
+
 ### Shell modes
 
 | Mode | How it runs | Use when |
@@ -131,6 +189,8 @@ explicitly here.
   - `state.json` — profiles, last-started profile, last exit
   - `run.json` — written while a process is managed (used for re-adoption
     after a backend restart)
+  - `usage.json` — the per-model token ledger behind the live dashboard
+    (prompt / generation totals per model, atomic writes)
   - `logs/process.log` (and `.log.1`) — the captured process output, rotated
     at ~5 MiB; the UI's ring buffer holds the most recent 2000 lines
 - Backend stdout: `~/.kiro/crew/apps/si-crewapp-localinferenceswitch/data/logs/backend.log`

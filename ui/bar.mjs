@@ -28,11 +28,12 @@
 // "zli:persist-flag" CustomEvent (same tab),
 // the "storage" event (other tabs), and a 1 s poll as a backstop.
 //
-// Data: GET /api/state every 2.5 s plus subscribeLogs()' live stream (SSE
-// with a built-in polling fallback) — the same gateway-proxy routes the app
-// page uses, with the dashboard session cookie.
+// Data: GET /api/state every 2.5 s, GET /api/metrics (the ninfer dashboard
+// data) on the same cadence, plus subscribeLogs()' live stream (SSE with a
+// built-in polling fallback) — the same gateway-proxy routes the app page
+// uses, with the dashboard session cookie.
 
-import { getState, subscribeLogs, fmtDur } from "./lib.mjs"
+import { getState, getMetrics, subscribeLogs, fmtDur, fmtTps } from "./lib.mjs"
 
 const FLAG_KEY = "zli.persistBar"
 const FLAG_EVENT = "zli:persist-flag"
@@ -46,6 +47,7 @@ let sub = null // { close() } from subscribeLogs()
 let pollTimer = null
 let lastLine = ""
 let stateCache = null
+let metricsCache = null
 let apiDown = false
 let mounted = false
 let padStore = new Map() // node -> its inline paddingBottom before we padded
@@ -144,6 +146,16 @@ function makeBar() {
     }),
     name: el("span", { fontWeight: 600, whiteSpace: "nowrap", color: "#e2e8f0" }, "…"),
     meta: el("span", { whiteSpace: "nowrap", color: "#64748b" }),
+    metrics: el("span", {
+      whiteSpace: "nowrap",
+      color: "#67e8f9",
+      fontSize: 11,
+      padding: "1px 8px",
+      borderRadius: 999,
+      border: "1px solid rgba(34,211,238,.3)",
+      background: "rgba(34,211,238,.06)",
+      display: "none",
+    }),
     line: el("span", {
       flex: 1,
       overflow: "hidden",
@@ -167,6 +179,7 @@ function makeBar() {
   root.appendChild(els.dot)
   root.appendChild(els.name)
   root.appendChild(els.meta)
+  root.appendChild(els.metrics)
   root.appendChild(els.line)
   root.appendChild(openBtn)
   root.appendChild(hideBtn)
@@ -340,6 +353,7 @@ function render() {
   if (apiDown) {
     els.name.textContent = "backend offline"
     els.meta.textContent = ""
+    els.metrics.style.display = "none"
     els.line.textContent = "can't reach the app backend — is the app enabled in Kiro Crew?"
     els.line.title = ""
   } else {
@@ -347,16 +361,52 @@ function render() {
     els.meta.textContent = proc.running ? `pid ${proc.pid} · ${fmtDur(uptime)}` : ""
     els.line.textContent = lastLine || (proc.running ? "no output yet" : "nothing running")
     els.line.title = lastLine
+    renderMetricsChip()
+  }
+}
+
+// The compact "avg tok/s · model" chip in the bar. Shown only when the
+// ninfer service is reachable; it degrades to a red "offline" pill when the
+// collector reports the service is down.
+function renderMetricsChip() {
+  if (!els || !metricsCache) {
+    if (els) els.metrics.style.display = "none"
+    return
+  }
+  const m = metricsCache
+  if (m.ok && m.throughput) {
+    const t = m.throughput
+    const avg = t.decode_tps_avg != null ? fmtTps(t.decode_tps_avg) : fmtTps(t.decode_tps)
+    const model = (m.model && m.model.name) || ""
+    els.metrics.textContent = `${avg} tok/s${model ? " · " + model : ""}`
+    els.metrics.title = `decode ${fmtTps(t.decode_tps)} tok/s now · total ${fmtTps(t.total_tps)} tok/s · avg ${avg} tok/s`
+    els.metrics.style.color = "#67e8f9"
+    els.metrics.style.borderColor = "rgba(34,211,238,.3)"
+    els.metrics.style.background = "rgba(34,211,238,.06)"
+    els.metrics.style.display = ""
+  } else if (m.ok === false) {
+    els.metrics.textContent = "ninfer offline"
+    els.metrics.title = m.reason || "service unreachable"
+    els.metrics.style.color = "#f87171"
+    els.metrics.style.borderColor = "rgba(248,113,113,.4)"
+    els.metrics.style.background = "rgba(248,113,113,.08)"
+    els.metrics.style.display = ""
+  } else {
+    els.metrics.style.display = "none"
   }
 }
 
 async function pollState() {
-  try {
-    stateCache = await getState()
+  // state and metrics share the backend; fetch them together so one round
+  // trip's worth of latency drives both the bar text and the metrics chip.
+  const [stateRes, metricsRes] = await Promise.allSettled([getState(), getMetrics()])
+  if (stateRes.status === "fulfilled") {
+    stateCache = stateRes.value
     apiDown = false
-  } catch {
+  } else {
     apiDown = true
   }
+  if (metricsRes.status === "fulfilled") metricsCache = metricsRes.value
   render()
 }
 
@@ -370,6 +420,7 @@ function mount() {
   lastLine = ""
   apiDown = false
   stateCache = null
+  metricsCache = null
   // Keep the reserved band in sync with the dashboard's layout: any new
   // scroll container (a freshly opened terminal, a panel, a route change)
   // mutates the DOM or the viewport, which re-runs reserve().

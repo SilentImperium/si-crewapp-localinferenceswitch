@@ -18,8 +18,13 @@ import {
   startProcess,
   stopProcess,
   subscribeLogs,
+  startMetricsPoll,
   fmtDur,
   fmtTime,
+  fmtBytes,
+  fmtNum,
+  fmtPct,
+  fmtTps,
 } from "./lib.mjs"
 
 // Side-effect import: the persistent "everywhere" bar. bar.mjs mounts itself
@@ -326,6 +331,7 @@ function ProfileForm({ initial, busy, errors, onClose, onSave }) {
   const [command, setCommand] = useState(initial?.command || "")
   const [cwd, setCwd] = useState(initial?.cwd || "~")
   const [shell, setShell] = useState(initial?.shell || "login")
+  const [port, setPort] = useState(initial?.port != null ? String(initial.port) : "")
   const [envText, setEnvText] = useState(
     Object.entries(initial?.env || {})
       .map(([k, v]) => `${k}=${v}`)
@@ -345,7 +351,15 @@ function ProfileForm({ initial, busy, errors, onClose, onSave }) {
       }
       env[line.slice(0, i).trim()] = line.slice(i + 1)
     }
-    onSave({ name: name.trim(), command: command.trim(), cwd: cwd.trim() || "~", shell, env })
+    const portNum = port.trim() === "" ? null : Number(port.trim())
+    onSave({
+      name: name.trim(),
+      command: command.trim(),
+      cwd: cwd.trim() || "~",
+      shell,
+      env,
+      port: portNum == null || Number.isNaN(portNum) ? null : Math.trunc(portNum),
+    })
   }
 
   return h(
@@ -393,7 +407,7 @@ function ProfileForm({ initial, busy, errors, onClose, onSave }) {
     ),
     h(
       "div",
-      { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } },
+      { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 } },
       h(
         Field,
         { label: "Working directory" },
@@ -413,6 +427,20 @@ function ProfileForm({ initial, busy, errors, onClose, onSave }) {
           { className: "zli-input", style: inputStyle, value: shell, onChange: (e) => setShell(e.target.value) },
           SHELLS.map(([v, label]) => h("option", { key: v, value: v }, label))
         )
+      ),
+      h(
+        Field,
+        {
+          label: "Port (optional)",
+          hint: "Used to detect & verify the service; defaults to --port in the command",
+        },
+        h("input", {
+          className: "zli-input",
+          style: inputStyle,
+          value: port,
+          placeholder: "e.g. 1234",
+          onChange: (e) => setPort(e.target.value),
+        })
       )
     ),
     h(
@@ -438,6 +466,584 @@ function ProfileForm({ initial, busy, errors, onClose, onSave }) {
         "Save profile"
       ),
       h(Button, { kind: "ghost", onClick: onClose }, "Cancel")
+    )
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Live dashboard (ninfer /metrics) — throughput + sparkline, token ledgers,
+// requests + latency, spec decode + memory. Data comes from the app backend's
+// /api/metrics, which polls the ninfer Prometheus endpoint server-side (the
+// service sends no CORS headers, so browser-side polling isn't possible).
+
+// Hand-rolled canvas sparkline (no chart lib): decode line (solid, glowing)
+// over a faint dashed total line, with an area fill. `data` = [ts, decode, total][].
+function Sparkline({ data = [], width = 280, height = 64, color = "#22d3ee", faint = "#a855f7" }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const c = ref.current
+    if (!c) return
+    const dpr = window.devicePixelRatio || 1
+    c.width = Math.round(width * dpr)
+    c.height = Math.round(height * dpr)
+    const ctx = c.getContext("2d")
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, width, height)
+
+    const pts = data.slice(-150)
+    if (pts.length < 2) {
+      ctx.strokeStyle = "rgba(148,163,184,.25)"
+      ctx.setLineDash([4, 4])
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(0, height / 2)
+      ctx.lineTo(width, height / 2)
+      ctx.stroke()
+      ctx.setLineDash([])
+      return
+    }
+
+    const maxV = Math.max(1, ...pts.map((p) => Math.max(p[1] || 0, p[2] || 0)))
+    const px = (i) => (i / (pts.length - 1)) * width
+    const py = (v) => height - 3 - (v / maxV) * (height - 8)
+
+    // faint horizontal grid
+    ctx.strokeStyle = "rgba(148,163,184,.10)"
+    ctx.lineWidth = 1
+    for (let g = 1; g < 4; g++) {
+      ctx.beginPath()
+      ctx.moveTo(0, (height / 4) * g)
+      ctx.lineTo(width, (height / 4) * g)
+      ctx.stroke()
+    }
+
+    // area fill under the decode line
+    const grad = ctx.createLinearGradient(0, 0, 0, height)
+    grad.addColorStop(0, color + "33")
+    grad.addColorStop(1, color + "00")
+    ctx.beginPath()
+    ctx.moveTo(0, height)
+    pts.forEach((p, i) => ctx.lineTo(px(i), py(p[1] || 0)))
+    ctx.lineTo(width, height)
+    ctx.closePath()
+    ctx.fillStyle = grad
+    ctx.fill()
+
+    // total line (faint, dashed)
+    ctx.strokeStyle = faint + "88"
+    ctx.setLineDash([3, 3])
+    ctx.beginPath()
+    pts.forEach((p, i) => (i ? ctx.lineTo(px(i), py(p[2] || 0)) : ctx.moveTo(px(0), py(p[2] || 0))))
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // decode line (glowing)
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    ctx.shadowColor = color
+    ctx.shadowBlur = 6
+    ctx.beginPath()
+    pts.forEach((p, i) => (i ? ctx.lineTo(px(i), py(p[1] || 0)) : ctx.moveTo(px(0), py(p[1] || 0))))
+    ctx.stroke()
+    ctx.shadowBlur = 0
+  }, [data, width, height, color, faint])
+  return h("canvas", { ref, style: { width, height, display: "block" } })
+}
+
+// small label/value block used inside the dashboard cards
+function Stat({ label, value, sub, tone }) {
+  return h(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 } },
+    h(
+      "span",
+      {
+        style: {
+          fontSize: 10,
+          color: "#64748b",
+          textTransform: "uppercase",
+          letterSpacing: ".06em",
+          whiteSpace: "nowrap",
+        },
+      },
+      label
+    ),
+    h(
+      "span",
+      {
+        style: {
+          fontSize: 16,
+          fontWeight: 700,
+          fontFamily: MONO,
+          color: tone || "#e2e8f0",
+          whiteSpace: "nowrap",
+        },
+      },
+      value
+    ),
+    sub != null &&
+      h(
+        "span",
+        {
+          style: {
+            fontSize: 10,
+            color: "#64748b",
+            fontFamily: MONO,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          },
+        },
+        sub
+      )
+  )
+}
+
+// thin utilization bar (value/max)
+function Meter({ value = 0, max = 1, color = "#22d3ee", height = 6 }) {
+  const pct = max > 0 ? Math.min(1, Math.max(0, value / max)) * 100 : 0
+  return h(
+    "div",
+    {
+      style: {
+        flex: 1,
+        height,
+        borderRadius: 3,
+        background: "rgba(148,163,184,.12)",
+        overflow: "hidden",
+      },
+    },
+    h("div", {
+      style: {
+        width: pct + "%",
+        height: "100%",
+        borderRadius: 3,
+        background: `linear-gradient(90deg, ${color}, ${color}77)`,
+        boxShadow: `0 0 8px ${color}55`,
+        transition: "width .4s ease",
+      },
+    })
+  )
+}
+
+function CardTitle({ icon, children }) {
+  return h(
+    "div",
+    { style: { display: "flex", alignItems: "center", gap: 7 } },
+    icon,
+    h(
+      "span",
+      {
+        style: {
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: ".08em",
+          textTransform: "uppercase",
+          color: "#94a3b8",
+        },
+      },
+      children
+    )
+  )
+}
+
+function MetricsDashboard() {
+  const [m, setM] = useState(null)
+
+  useEffect(() => {
+    const sub = startMetricsPoll(setM, 2500)
+    return () => sub.close()
+  }, [])
+
+  const header = h(
+    "div",
+    {
+      key: "dash-h",
+      style: {
+        display: "flex",
+        alignItems: "baseline",
+        gap: 8,
+        margin: "4px 0 8px",
+        flexWrap: "wrap",
+      },
+    },
+    h("span", { style: { fontSize: 13, fontWeight: 700, color: "#e2e8f0" } }, "Live dashboard"),
+    m &&
+      m.ok &&
+      h(
+        "span",
+        { style: { fontSize: 11, color: "#64748b", fontFamily: MONO } },
+        `ninfer · port ${m.port} · updated ${fmtTime(m.updated_at)}`
+      ),
+    m && !m.ok && h(Chip, { tone: "#f87171", bg: "rgba(248,113,113,.1)" }, "offline")
+  )
+
+  if (!m)
+    return h(
+      "div",
+      { key: "dash" },
+      header,
+      h(
+        "div",
+        {
+          style: {
+            ...GLASS_CARD,
+            padding: "18px 16px",
+            fontSize: 12,
+            color: "#64748b",
+            fontFamily: MONO,
+          },
+        },
+        "connecting to the metrics collector…"
+      )
+    )
+
+  if (!m.ok)
+    return h(
+      "div",
+      { key: "dash" },
+      header,
+      h(
+        "div",
+        {
+          className: "zli-card",
+          style: {
+            ...GLASS_CARD,
+            padding: "14px 16px",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          },
+        },
+        h(Dot, { tone: "#f87171", size: 8 }),
+        h(
+          "div",
+          { style: { display: "flex", flexDirection: "column", gap: 2 } },
+          h(
+            "span",
+            { style: { fontSize: 12, fontWeight: 700, color: "#f87171", fontFamily: MONO } },
+            "NINFER OFFLINE"
+          ),
+          h(
+            "span",
+            { style: { fontSize: 11, color: "#94a3b8" } },
+            `${m.reason || "unknown"} — start a profile below; the dashboard reconnects automatically.`
+          )
+        )
+      )
+    )
+
+  const t = m.throughput || {}
+  const r = m.requests || {}
+  const s = m.spec_decode || null
+  const mem = m.memory || {}
+  const dev = mem.device || {}
+  const hostM = mem.host || {}
+  const tok = m.tokens || {}
+  const sess = tok.session || {}
+  const model = m.model || {}
+
+  const cardStyle = {
+    ...GLASS_CARD,
+    padding: 14,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  }
+
+  return h(
+    "div",
+    { key: "dash" },
+    header,
+    h(
+      "div",
+      {
+        style: {
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gap: 14,
+        },
+      },
+      // ---- throughput ------------------------------------------------------
+      h(
+        "div",
+        { key: "c-thru", className: "zli-card", style: cardStyle },
+        h(CardTitle, { icon: h(Activity, { size: 14, style: { color: "#22d3ee" } }) }, "Throughput"),
+        h(
+          "div",
+          { style: { display: "flex", gap: 18, flexWrap: "wrap" } },
+          h(
+            Stat,
+            {
+              label: "decode now",
+              value: t.decode_tps != null ? fmtTps(t.decode_tps) + " t/s" : "—",
+              tone: "#67e8f9",
+            }
+          ),
+          h(
+            Stat,
+            {
+              label: "avg (ema)",
+              value: t.decode_tps_avg != null ? fmtTps(t.decode_tps_avg) + " t/s" : "—",
+            }
+          ),
+          h(
+            Stat,
+            {
+              label: "total now",
+              value: t.total_tps != null ? fmtTps(t.total_tps) + " t/s" : "—",
+              sub: "prompt + decode",
+            }
+          )
+        ),
+        h(Sparkline, { data: t.history || [] }),
+        h(
+          "div",
+          { style: { display: "flex", gap: 12, fontSize: 10, color: "#64748b", fontFamily: MONO } },
+          h("span", null, "— decode"),
+          h("span", null, "--- total"),
+          h("span", { style: { marginLeft: "auto" } }, "last ~7 min")
+        )
+      ),
+      // ---- tokens ----------------------------------------------------------
+      h(
+        "div",
+        { key: "c-tok", className: "zli-card", style: cardStyle },
+        h(CardTitle, { icon: h(Terminal, { size: 14, style: { color: "#a855f7" } }) }, "Tokens"),
+        h(
+          "div",
+          { style: { display: "flex", gap: 18, flexWrap: "wrap" } },
+          h(
+            Stat,
+            {
+              label: "prompt",
+              value: fmtNum(tok.prompt),
+              sub: tok.cached_prompt
+                ? `${fmtPct(tok.cached_prompt / Math.max(1, tok.prompt))} cached`
+                : null,
+            }
+          ),
+          h(Stat, { label: "generation", value: fmtNum(tok.generation) }),
+          h(Stat, { label: "total", value: fmtNum(tok.total) })
+        ),
+        sess.model
+          ? h(
+              "div",
+              {
+                style: {
+                  fontSize: 11,
+                  color: "#94a3b8",
+                  fontFamily: MONO,
+                  background: "rgba(168,85,247,.07)",
+                  border: "1px solid rgba(168,85,247,.25)",
+                  borderRadius: 8,
+                  padding: "7px 10px",
+                },
+              },
+              `this session · ${sess.model} — ${fmtNum(sess.total)} tok${
+                sess.since ? ` · running ${fmtDur(Date.now() / 1000 - sess.since)}` : ""
+              }`
+            )
+          : null,
+        (tok.by_model || []).length
+          ? h(
+              "div",
+              { style: { display: "flex", flexDirection: "column", gap: 4 } },
+              (tok.by_model || []).map((bm) =>
+                h(
+                  "div",
+                  {
+                    key: bm.model,
+                    style: {
+                      display: "flex",
+                      alignItems: "baseline",
+                      gap: 8,
+                      fontSize: 11,
+                      fontFamily: MONO,
+                    },
+                  },
+                  h(
+                    "span",
+                    { style: { color: "#e2e8f0", fontWeight: 600, whiteSpace: "nowrap" } },
+                    bm.model
+                  ),
+                  bm.spec_backend && h("span", { style: { color: "#67e8f9" } }, bm.spec_backend),
+                  h("span", { style: { flex: 1 } }),
+                  h(
+                    "span",
+                    { style: { color: "#64748b", whiteSpace: "nowrap" } },
+                    `${fmtNum(bm.prompt)}p / ${fmtNum(bm.generation)}g`
+                  ),
+                  h("span", { style: { color: "#a5b4fc", whiteSpace: "nowrap" } }, fmtNum(bm.total))
+                )
+              )
+            )
+          : h("div", { style: { fontSize: 11, color: "#64748b" } }, "no model usage recorded yet")
+      ),
+      // ---- requests --------------------------------------------------------
+      h(
+        "div",
+        { key: "c-req", className: "zli-card", style: cardStyle },
+        h(CardTitle, { icon: h(LoaderCircle, { size: 14, style: { color: "#34d399" } }) }, "Requests"),
+        h(
+          "div",
+          { style: { display: "flex", gap: 18, flexWrap: "wrap" } },
+          h(
+            Stat,
+            {
+              label: "running",
+              value: `${Math.round(r.running || 0)} / ${Math.round(r.max_concurrency || 0)}`,
+              sub: r.waiting ? `${Math.round(r.waiting)} waiting` : null,
+              tone: (r.running || 0) > 0 ? "#34d399" : undefined,
+            }
+          ),
+          h(Stat, { label: "completed", value: fmtNum(r.completed) }),
+          h(
+            Stat,
+            {
+              label: "lost",
+              value: fmtNum((r.failed || 0) + (r.cancelled || 0) + (r.rejected || 0)),
+              sub: `f ${Math.round(r.failed || 0)} · c ${Math.round(r.cancelled || 0)} · r ${Math.round(
+                r.rejected || 0
+              )}`,
+            }
+          )
+        ),
+        h(
+          "div",
+          {
+            style: {
+              display: "flex",
+              gap: 18,
+              flexWrap: "wrap",
+              borderTop: "1px solid rgba(148,163,184,.12)",
+              paddingTop: 10,
+            },
+          },
+          h(Stat, { label: "ttft avg", value: r.ttft_s != null ? r.ttft_s + " s" : "—" }),
+          h(Stat, { label: "duration avg", value: r.duration_s != null ? r.duration_s + " s" : "—" }),
+          h(Stat, { label: "queue avg", value: r.queue_s != null ? r.queue_s + " s" : "—" })
+        )
+      ),
+      // ---- spec decode + memory ---------------------------------------------
+      h(
+        "div",
+        { key: "c-spec", className: "zli-card", style: cardStyle },
+        h(CardTitle, { icon: h(Cpu, { size: 14, style: { color: "#fbbf24" } }) }, "Spec decode · memory"),
+        s && s.draft_window != null
+          ? h(
+              "div",
+              { style: { display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" } },
+              h(
+                Stat,
+                {
+                  label: "acceptance",
+                  value: s.acceptance != null ? fmtPct(s.acceptance) : "—",
+                  tone: "#fbbf24",
+                  sub: `${fmtNum(s.draft_tokens)} draft · ${fmtNum(s.accepted_tokens)} accepted`,
+                }
+              ),
+              (s.positions || []).length
+                ? h(
+                    "div",
+                    {
+                      style: { display: "flex", gap: 5, alignItems: "flex-end" },
+                      title: "acceptance by draft position",
+                    },
+                    (s.positions || []).map((p) =>
+                      h(
+                        "div",
+                        {
+                          key: p.position,
+                          style: {
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            gap: 2,
+                          },
+                        },
+                        h(
+                          "div",
+                          {
+                            style: {
+                              width: 16,
+                              height: 44,
+                              background: "rgba(148,163,184,.10)",
+                              borderRadius: 3,
+                              position: "relative",
+                              overflow: "hidden",
+                            },
+                            title: `position ${p.position}: ${Math.round((p.rate || 0) * 100)}% accepted`,
+                          },
+                          h("div", {
+                            style: {
+                              position: "absolute",
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: `${Math.round((p.rate || 0) * 100)}%`,
+                              background: "linear-gradient(180deg, #22d3ee, #a855f7)",
+                              borderRadius: 3,
+                            },
+                          })
+                        ),
+                        h(
+                          "span",
+                          { style: { fontSize: 9, color: "#64748b", fontFamily: MONO } },
+                          String(p.position)
+                        )
+                      )
+                    )
+                  )
+                : null
+            )
+          : h("div", { style: { fontSize: 11, color: "#64748b" } }, "no speculative decoding configured"),
+        h(
+          "div",
+          {
+            style: {
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              borderTop: "1px solid rgba(148,163,184,.12)",
+              paddingTop: 10,
+            },
+          },
+          h(
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 11, fontFamily: MONO } },
+            h("span", { style: { color: "#64748b", width: 44, flexShrink: 0 } }, "device"),
+            h(Meter, {
+              value: dev.allocated || 0,
+              max: dev.budget || 0,
+              color: dev.utilization != null && dev.utilization > 0.95 ? "#f87171" : "#22d3ee",
+            }),
+            h(
+              "span",
+              { style: { color: "#e2e8f0", whiteSpace: "nowrap" } },
+              `${fmtBytes(dev.allocated)} / ${fmtBytes(dev.budget)}${
+                dev.utilization != null ? ` · ${fmtPct(dev.utilization)}` : ""
+              }`
+            )
+          ),
+          h(
+            "div",
+            { style: { display: "flex", gap: 14, fontSize: 10.5, color: "#64748b", fontFamily: MONO, flexWrap: "wrap" } },
+            h("span", null, `weights ${fmtBytes(dev.weights)}`),
+            h("span", null, `kv ${fmtBytes(dev.kv)}`),
+            h("span", { style: { marginLeft: "auto" } }, `host kv ${fmtBytes(hostM.kv_pinned)}`)
+          ),
+          model.max_context
+            ? h(
+                "div",
+                { style: { fontSize: 10.5, color: "#64748b", fontFamily: MONO } },
+                `max context ${fmtNum(model.max_context)} tok · ${model.name || "?"}${
+                  model.spec_backend ? ` (${model.spec_backend})` : ""
+                }`
+              )
+            : null
+        )
+      )
     )
   )
 }
@@ -562,7 +1168,11 @@ export default function SILocalInferencingApp() {
   const doStop = () => {
     if (!window.confirm(`Stop "${proc.profile_name || "the running process"}" (pid ${proc.pid})?`))
       return
-    act(() => stopProcess(8000))
+    act(async () => {
+      const r = await stopProcess(8000)
+      if (r && r.stopped === false && r.running)
+        throw new Error(`stop failed: service still running (pid ${r.pid})`)
+    })
   }
 
   const doDelete = (p) => {
@@ -758,9 +1368,22 @@ export default function SILocalInferencingApp() {
               { style: { whiteSpace: "nowrap", color: "#e2e8f0" } },
               `${proc.profile_name || "process"} · pid ${proc.pid} · ${fmtDur(uptime)}${
                 proc.attached === false ? " · detached" : ""
-              }`
+              }${proc.readopted ? " · adopted" : ""}`
             )
           : h("span", { style: { color: "#94a3b8" } }, "idle"),
+        state && state.service_detected && !proc.running
+          ? h(
+              Chip,
+              {
+                tone: "#fbbf24",
+                bg: "rgba(251,191,36,.1)",
+                title: "A service matching a profile is running outside the app. Stop will adopt and stop it.",
+              },
+              `outside app: pid ${state.service_detected.pid}${
+                state.service_detected.profile_name ? ` (${state.service_detected.profile_name})` : ""
+              }`
+            )
+          : null,
         h(
           Button,
           {
@@ -817,6 +1440,8 @@ export default function SILocalInferencingApp() {
         },
         error
       ),
+    // live dashboard (ninfer /metrics)
+    h(MetricsDashboard),
     // profiles
     h(
       "div",
@@ -880,7 +1505,7 @@ export default function SILocalInferencingApp() {
           h(
             "div",
             { style: { fontSize: 11, color: "#64748b" } },
-            `cwd ${p.cwd || "~"} · shell ${p.shell}${p.env && Object.keys(p.env).length ? ` · ${Object.keys(p.env).length} env` : ""}`
+            `cwd ${p.cwd || "~"} · shell ${p.shell}${p.port ? ` · port ${p.port}` : ""}${p.env && Object.keys(p.env).length ? ` · ${Object.keys(p.env).length} env` : ""}`
           ),
           h(
             "div",

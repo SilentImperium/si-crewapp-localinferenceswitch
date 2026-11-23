@@ -41,6 +41,46 @@ export const stopProcess = (grace_ms) =>
   http("POST", "process/stop", grace_ms ? { grace_ms } : {})
 export const tailLogs = (after, limit) =>
   http("GET", `logs/tail?after=${encodeURIComponent(after || 0)}&limit=${limit || 300}`)
+export const getMetrics = () => http("GET", "metrics")
+
+// Live inference dashboard data (the ninfer /metrics collector).
+//
+// Polls /api/metrics every `interval` ms (default 2500) and calls
+// onData(snapshot). The backend always answers with a well-formed snapshot:
+// {ok:true, model, engine, throughput, requests, spec_decode, memory, tokens}
+// while the service is reachable, and {ok:false, reason, stale:true} when it
+// isn't, so callers can degrade gracefully. If the app backend itself is
+// unreachable, the same offline shape is synthesized. Never throws; overlapping
+// ticks are skipped. Returns { close() }.
+export function startMetricsPoll(onData, interval = 2500) {
+  let closed = false
+  let inflight = false
+  let timer = null
+
+  async function tick() {
+    if (closed || inflight) return
+    inflight = true
+    try {
+      const d = await getMetrics()
+      if (!closed) onData(d)
+    } catch {
+      if (!closed)
+        onData({ ok: false, reason: "app backend unreachable", stale: true })
+    } finally {
+      inflight = false
+    }
+  }
+
+  tick()
+  timer = setInterval(tick, interval)
+  return {
+    close() {
+      closed = true
+      if (timer) clearInterval(timer)
+      timer = null
+    },
+  }
+}
 
 // Live log stream.
 //
@@ -166,4 +206,36 @@ export function fmtTime(epoch) {
   } catch {
     return ""
   }
+}
+
+// --- metrics formatters -----------------------------------------------------
+
+export function fmtBytes(n) {
+  if (n == null || !isFinite(n)) return ""
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  let v = Number(n)
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+export function fmtNum(n) {
+  if (n == null || !isFinite(n)) return ""
+  const v = Number(n)
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + "M"
+  if (Math.abs(v) >= 1e4) return (v / 1e3).toFixed(1) + "k"
+  return String(Math.round(v))
+}
+
+export function fmtPct(x) {
+  if (x == null || !isFinite(x)) return ""
+  return (x * 100).toFixed(1) + "%"
+}
+
+export function fmtTps(x) {
+  if (x == null || !isFinite(x)) return ""
+  return x >= 100 ? Math.round(x).toString() : x.toFixed(1)
 }
