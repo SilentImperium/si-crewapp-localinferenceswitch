@@ -465,6 +465,74 @@ def _wsl_cleanup(prof):
     return True
 
 
+_WSL_ALIVE_CACHE = {"at": 0.0, "marker": None, "value": None}
+
+
+def _wsl_marker_alive(prof):
+    """Is the marker's session alive inside the WSL distro?
+
+    Returns True/False, or None when the profile is not a wsl.exe wrapper
+    (the caller should fall back to pid liveness). The check spawns a
+    wsl.exe process, so results are cached for 5 s.
+    """
+    cmd = str((prof or {}).get("command") or "")
+    if "wsl.exe" not in cmd:
+        return None
+    marker = _profile_marker(prof)
+    if not marker:
+        return None
+    now = time.time()
+    if (
+        _WSL_ALIVE_CACHE["marker"] == marker
+        and _WSL_ALIVE_CACHE["value"] is not None
+        and now - _WSL_ALIVE_CACHE["at"] < 5.0
+    ):
+        return _WSL_ALIVE_CACHE["value"]
+    dm = re.search(r"-d\s+(\S+)", cmd)
+    argv = ["wsl.exe"]
+    if dm:
+        argv += ["-d", dm.group(1)]
+    argv += [
+        "--",
+        "bash",
+        "-lc",
+        "pgrep -f '%s' >/dev/null 2>&1 && echo 1 || echo 0" % marker,
+    ]
+    value = None
+    try:
+        out = subprocess.run(
+            argv, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        ).stdout or ""
+        value = out.strip().endswith("1")
+    except Exception:
+        value = None
+    _WSL_ALIVE_CACHE["at"] = now
+    _WSL_ALIVE_CACHE["marker"] = marker
+    _WSL_ALIVE_CACHE["value"] = value
+    return value
+
+
+def _service_signal_alive(run):
+    """Is the service itself alive (its port / distro marker), independent of
+    any child-process handle?
+
+    For wsl.exe-wrapper profiles the Windows-side launcher pid is ephemeral
+    (it can die while the distro service keeps running), so liveness comes
+    from the service port when known (cheap), else the distro-side marker
+    (cached). For native profiles it is the tracked pid.
+    """
+    prof = _profile_by_id(run.get("profile_id"))
+    if prof is None:
+        prof = {"command": run.get("command")}
+    port = _profile_port(prof)
+    cmd = str(prof.get("command") or "")
+    if "wsl.exe" in cmd:
+        if port:
+            return _port_listening(port)
+        return bool(_wsl_marker_alive(prof))
+    return _pid_alive(run.get("pid"))
+
+
 def _profile_port(prof):
     """A profile's service port: its explicit field, else --port in the command."""
     if not prof:
@@ -857,22 +925,63 @@ def _reader(run):
 def _watcher(run):
     global RUN
     proc = run.get("proc")
-    if proc is None:
+    if proc is not None:
+        try:
+            proc.wait()
+        except Exception:
+            pass
+        time.sleep(0.2)  # give the reader a moment to drain the pipe
+        with LOCK:
+            if RUN is not run:
+                return  # already finalized (e.g. by stop)
+            if run.get("proc") is None:
+                return  # detached by a failed stop (kept tracked) - not ours to finalize
+            # The launcher exited. A wsl.exe-wrapper service may keep running
+            # inside the distro after its launcher dies - re-point to a
+            # sentinel (pid 0) so Stop can still reach it, instead of
+            # finalizing and orphaning a live service.
+            prof = _profile_by_id(run.get("profile_id"))
+            cmd = str((prof or {}).get("command") or run.get("command") or "")
+            if "wsl.exe" in cmd:
+                run["proc"] = None
+                run["attached"] = False
+                run["pid"] = 0
+                run["pgid"] = 0
+                run["readopted"] = True
+                _write_run_file(run)
+                _append_line(
+                    "[si] '%s' launcher exited; re-adopted (distro service may keep running; stop still available)"
+                    % (run.get("profile_name") or "process")
+                )
+            else:
+                info = _record_exit(run, proc.returncode)
+                RUN = None
+                _delete_run_file()
+                _append_line(
+                    "[si] '%s' exited: %s"
+                    % (run.get("profile_name") or "process", _describe_exit(info))
+                )
+                return
+    # Adopted / sentinel record (no live child process): poll the service's
+    # liveness and clear the record when the service actually goes away.
+    # This is what keeps a re-adopted wsl.exe service from getting stuck on a
+    # dead launcher pid.
+    while True:
+        time.sleep(3.0)
+        alive = _service_signal_alive(run)  # outside LOCK (may spawn wsl.exe)
+        with LOCK:
+            if RUN is not run:
+                return  # replaced (stop/start) - not ours to finalize
+            if alive:
+                continue  # service still up; keep tracking
+            info = _record_exit(run, None)  # detached: exit status unknown
+            RUN = None
+            _delete_run_file()
+        _append_line(
+            "[si] '%s' no longer running - cleared tracked record"
+            % (run.get("profile_name") or "process")
+        )
         return
-    try:
-        proc.wait()
-    except Exception:
-        pass
-    time.sleep(0.2)  # give the reader a moment to drain the pipe
-    with LOCK:
-        if RUN is not run:
-            return  # already finalized (e.g. by stop)
-        if run.get("proc") is None:
-            return  # detached by a failed stop (kept tracked) - not ours to finalize
-        info = _record_exit(run, proc.returncode)
-        RUN = None
-        _delete_run_file()
-    _append_line("[si] '%s' exited: %s" % (run.get("profile_name") or "process", _describe_exit(info)))
 
 
 def _write_run_file(run):
@@ -989,8 +1098,29 @@ def proc_status_locked():
     r = RUN
     if not r:
         return {"running": False}
+    if r.get("proc") is not None:
+        try:
+            running = r["proc"].poll() is None
+        except Exception:
+            running = False
+    else:
+        # Adopted / sentinel: cheap liveness under LOCK. For wsl.exe-wrapper
+        # profiles the launcher pid is ephemeral, so use the service port when
+        # known; the watcher re-checks the (costlier) marker path outside LOCK.
+        prof = _profile_by_id(r.get("profile_id"))
+        cmd = str((prof or {}).get("command") or r.get("command") or "")
+        if "wsl.exe" in cmd:
+            port = _profile_port(prof) if prof else None
+            if port:
+                running = _port_listening(port)
+            elif r.get("pid"):
+                running = _pid_alive(r["pid"])
+            else:
+                running = True  # wsl sentinel, no port: assume alive; watcher settles it
+        else:
+            running = _pid_alive(r.get("pid"))
     return {
-        "running": True,
+        "running": running,
         "attached": r.get("attached", False),
         "readopted": bool(r.get("readopted")),
         "pid": r["pid"],
