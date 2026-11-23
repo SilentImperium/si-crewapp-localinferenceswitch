@@ -847,11 +847,18 @@ def start_process(profile_id, stop_current):
             if not argv:
                 return None, ApiError(400, "command is empty")
         elif IS_WINDOWS:
-            # No bash on Windows: run the verbatim command through cmd.exe.
-            # (The profiles here are wsl.exe wrappers; cmd.exe passes the
-            # quoted arguments through to wsl.exe intact.)
-            argv = cmd
-            use_shell = True
+            # No bash on Windows. Split the command respecting (Uni)sh quoting
+            # and run the argv directly (no shell). cmd.exe (shell=True) does
+            # not understand Unix single quotes, so it would split a wsl.exe
+            # wrapper's quoted argument on spaces and hand wsl.exe an
+            # unbalanced quote (bash: "unexpected EOF while looking for `'`").
+            try:
+                argv = shlex.split(cmd)
+            except ValueError as e:
+                return None, ApiError(400, "cannot parse command: %s" % e)
+            if not argv:
+                return None, ApiError(400, "command is empty")
+            use_shell = False
         else:
             if shell == "login":
                 argv = ["bash", "-lc", cmd]
