@@ -836,6 +836,17 @@ function MetricsDashboard() {
           h(
             Stat,
             {
+              label: "max (lifetime)",
+              value:
+                m.lifetime && m.lifetime.max_decode_tps != null
+                  ? fmtTps(m.lifetime.max_decode_tps) + " t/s"
+                  : "—",
+              sub: "fastest ~3s window",
+            }
+          ),
+          h(
+            Stat,
+            {
               label: "total now",
               value: t.total_tps != null ? fmtTps(t.total_tps) + " t/s" : "—",
               sub: "prompt + decode",

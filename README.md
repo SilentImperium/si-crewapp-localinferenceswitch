@@ -62,8 +62,9 @@ cadence as the existing state polling.
 **What it shows:**
 
 - **Throughput** — current decode tok/s, the EMA average, the **lifetime
-  average decode tok/s** (persisted: total generated tokens ÷ total time the
-  model was actively decoding, since the last stats clear), total
+  average decode tok/s** (persisted: total generated tokens ÷ total active
+  decode seconds) and the **lifetime peak decode tok/s** (fastest ~3 s
+  window), both since the last stats clear, total
   (prompt + decode) tok/s, and a ~7-minute sparkline. Rates are
   counter-deltas between ticks, so they survive counter resets and model
   restarts (a reset just re-baselines the delta).

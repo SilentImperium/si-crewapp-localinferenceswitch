@@ -1426,6 +1426,7 @@ def _fresh_lifetime():
     return {
         "decode_tokens": 0.0,
         "active_seconds": 0.0,
+        "max_decode_tps": None,
         "first_at": None,
         "last_at": None,
     }
@@ -1436,7 +1437,7 @@ def _coerce_lifetime(d):
     lt = _fresh_lifetime()
     if not isinstance(d, dict):
         return lt
-    for k in ("decode_tokens", "active_seconds", "first_at", "last_at"):
+    for k in ("decode_tokens", "active_seconds", "max_decode_tps", "first_at", "last_at"):
         v = d.get(k)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             lt[k] = v
@@ -1540,6 +1541,9 @@ def _metrics_tick():
                     if lt["first_at"] is None:
                         lt["first_at"] = now
                     lt["last_at"] = now
+                    # Running peak of the per-tick decode rate (since last clear).
+                    if decode_tps > (lt["max_decode_tps"] or 0.0):
+                        lt["max_decode_tps"] = decode_tps
                     usage_dirty = True
         _RATE["last_ts"] = now
         _RATE["last_gen"] = gen
@@ -1653,6 +1657,11 @@ def _metrics_tick():
         lifetime["avg_decode_tps"] = (
             round(lifetime["decode_tokens"] / lifetime["active_seconds"], 2)
             if lifetime["active_seconds"] > 0
+            else None
+        )
+        lifetime["max_decode_tps"] = (
+            round(lifetime["max_decode_tps"], 2)
+            if lifetime["max_decode_tps"] is not None
             else None
         )
         lifetime_total = sum(m["total"] for m in by_model)
