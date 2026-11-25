@@ -42,6 +42,7 @@ export const stopProcess = (grace_ms) =>
 export const tailLogs = (after, limit) =>
   http("GET", `logs/tail?after=${encodeURIComponent(after || 0)}&limit=${limit || 300}`)
 export const getMetrics = () => http("GET", "metrics")
+export const clearStats = () => http("POST", "stats/clear")
 
 // Live inference dashboard data (the ninfer /metrics collector).
 //

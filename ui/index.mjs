@@ -19,6 +19,7 @@ import {
   stopProcess,
   subscribeLogs,
   startMetricsPoll,
+  clearStats,
   fmtDur,
   fmtTime,
   fmtBytes,
@@ -649,11 +650,27 @@ function CardTitle({ icon, children }) {
 
 function MetricsDashboard() {
   const [m, setM] = useState(null)
+  const [clearing, setClearing] = useState(false)
 
   useEffect(() => {
     const sub = startMetricsPoll(setM, 2500)
     return () => sub.close()
   }, [])
+
+  const doClear = async () => {
+    const ok = window.confirm(
+      "Clear all stats?\n\nResets the per-model token ledger, the lifetime decode-speed average, and the in-memory rate history. Counters start fresh from the next tick."
+    )
+    if (!ok) return
+    setClearing(true)
+    try {
+      await clearStats()
+    } catch (e) {
+      window.alert("Clear stats failed: " + (e.message || e))
+    } finally {
+      setClearing(false)
+    }
+  }
 
   const header = h(
     "div",
@@ -675,7 +692,22 @@ function MetricsDashboard() {
         { style: { fontSize: 11, color: "#64748b", fontFamily: MONO } },
         `ninfer · port ${m.port} · updated ${fmtTime(m.updated_at)}`
       ),
-    m && !m.ok && h(Chip, { tone: "#f87171", bg: "rgba(248,113,113,.1)" }, "offline")
+    m && !m.ok && h(Chip, { tone: "#f87171", bg: "rgba(248,113,113,.1)" }, "offline"),
+    h("span", { style: { flex: 1 } }),
+    h(
+      Button,
+      {
+        kind: "danger",
+        small: true,
+        disabled: clearing,
+        title: "Reset the per-model token ledger, the lifetime decode-speed average, and the rate history",
+        onClick: doClear,
+      },
+      clearing
+        ? h(LoaderCircle, { size: 12, style: { animation: "zli-spin 1.2s linear infinite" } })
+        : h(Trash2, { size: 12 }),
+      "Clear stats"
+    )
   )
 
   if (!m)
@@ -790,6 +822,20 @@ function MetricsDashboard() {
           h(
             Stat,
             {
+              label: "avg (lifetime)",
+              value:
+                m.lifetime && m.lifetime.avg_decode_tps != null
+                  ? fmtTps(m.lifetime.avg_decode_tps) + " t/s"
+                  : "—",
+              sub:
+                m.lifetime && m.lifetime.active_seconds > 0
+                  ? `over ${fmtDur(m.lifetime.active_seconds)}`
+                  : null,
+            }
+          ),
+          h(
+            Stat,
+            {
               label: "total now",
               value: t.total_tps != null ? fmtTps(t.total_tps) + " t/s" : "—",
               sub: "prompt + decode",
@@ -825,6 +871,23 @@ function MetricsDashboard() {
           ),
           h(Stat, { label: "generation", value: fmtNum(tok.generation) }),
           h(Stat, { label: "total", value: fmtNum(tok.total) })
+        ),
+        h(
+          "div",
+          {
+            style: {
+              fontSize: 11,
+              color: "#94a3b8",
+              fontFamily: MONO,
+              background: "rgba(34,211,238,.06)",
+              border: "1px solid rgba(34,211,238,.25)",
+              borderRadius: 8,
+              padding: "7px 10px",
+            },
+          },
+          `lifetime (app ledger) · ${fmtNum(tok.lifetime_total)} tok generated${
+            m.lifetime && m.lifetime.first_at ? ` · since ${fmtTime(m.lifetime.first_at)}` : ""
+          }`
         ),
         sess.model
           ? h(

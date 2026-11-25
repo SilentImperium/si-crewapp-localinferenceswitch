@@ -61,14 +61,17 @@ cadence as the existing state polling.
 
 **What it shows:**
 
-- **Throughput** — current decode tok/s, the EMA average, total
+- **Throughput** — current decode tok/s, the EMA average, the **lifetime
+  average decode tok/s** (persisted: total generated tokens ÷ total time the
+  model was actively decoding, since the last stats clear), total
   (prompt + decode) tok/s, and a ~7-minute sparkline. Rates are
   counter-deltas between ticks, so they survive counter resets and model
   restarts (a reset just re-baselines the delta).
 - **Tokens** — lifetime prompt / generation / total counters, the prompt
   cache hit rate, the current session's totals (re-baselined when the
-  model (re)starts), and a per-model ledger: prompt / generation / total
-  for each model name seen, with its spec backend.
+  model (re)starts), a per-model ledger: prompt / generation / total for
+  each model name seen, with its spec backend, and the **lifetime
+  (app ledger)** total — tokens generated since the last stats clear.
 - **Requests** — running vs max concurrency, waiting, completed,
   failed / cancelled / rejected, and average TTFT, duration, and queue
   time.
@@ -82,9 +85,13 @@ and reconnects automatically when the service comes back. The persistent
 bottom bar and the Ninfer Log side panel show a compact "avg tok/s ·
 model" chip / strip from the same endpoint.
 
-**Data files.** The per-model ledger is persisted to `data/usage.json`
-(atomic writes), so lifetime token counts survive backend restarts. The
-in-memory rate history holds ~200 samples (10 min) and is not persisted.
+**Data files.** The per-model ledger and the lifetime decode-speed
+accumulator are persisted to `data/usage.json` (atomic writes), so lifetime
+token counts and the lifetime average decode speed survive backend restarts
+and model switches. The in-memory rate history holds ~200 samples (10 min)
+and is not persisted. A **Clear stats** button in the dashboard header
+resets the ledger, the accumulator, and the in-memory rates in one go
+(`POST /api/stats/clear`).
 
 ## Persistent bottom bar (everywhere)
 
@@ -189,8 +196,9 @@ explicitly here.
   - `state.json` — profiles, last-started profile, last exit
   - `run.json` — written while a process is managed (used for re-adoption
     after a backend restart)
-  - `usage.json` — the per-model token ledger behind the live dashboard
-    (prompt / generation totals per model, atomic writes)
+  - `usage.json` — the token ledger + lifetime decode-speed accumulator behind the live dashboard
+    (prompt / generation totals per model, lifetime tokens per active
+     decode second, atomic writes)
   - `logs/process.log` (and `.log.1`) — the captured process output, rotated
     at ~5 MiB; the UI's ring buffer holds the most recent 2000 lines
 - Backend stdout: `~/.kiro/crew/apps/si-crewapp-localinferenceswitch/data/logs/backend.log`

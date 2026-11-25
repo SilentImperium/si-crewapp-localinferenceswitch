@@ -21,7 +21,10 @@ Endpoints (as seen by the gateway, which prepends /api/):
   GET    /api/logs/stream   SSE: seed of lines after ?after= (or Last-Event-ID)
                             then live "line" / "exit" events, 15s heartbeats
   GET    /api/metrics       live inference dashboard data (token rates, per-model
-                            ledger, requests, latency, spec decode, memory)
+                            ledger, requests, latency, spec decode, memory,
+                            lifetime decode-speed average)
+  POST   /api/stats/clear   reset all stats: per-model ledger, lifetime
+                            decode-speed accumulator, in-memory rates
 
 Stdlib only - the gateway spawns this with a scrubbed env and no
 requirements.txt, so nothing may need provisioning.
@@ -1419,8 +1422,31 @@ _RATE = {
 _RUN_BASELINE = {"model": None, "gen_at_start": 0.0, "prompt_at_start": 0.0, "since": None}
 # Previous tick's counters + active model (for rate and ledger deltas).
 _PREV = {"gen": None, "prompt": None, "model": None, "ts": None}
-# Per-model lifetime ledger (persisted to usage.json).
-_USAGE = {"models": {}}
+def _fresh_lifetime():
+    return {
+        "decode_tokens": 0.0,
+        "active_seconds": 0.0,
+        "first_at": None,
+        "last_at": None,
+    }
+
+
+def _coerce_lifetime(d):
+    """Normalize a persisted lifetime block, keeping only sane values."""
+    lt = _fresh_lifetime()
+    if not isinstance(d, dict):
+        return lt
+    for k in ("decode_tokens", "active_seconds", "first_at", "last_at"):
+        v = d.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            lt[k] = v
+    return lt
+
+
+# Per-model token ledger + lifetime decode-speed accumulator (persisted to
+# usage.json). "Lifetime" is bounded by the last stats clear, so both
+# survive backend restarts and model switches.
+_USAGE = {"models": {}, "lifetime": _fresh_lifetime()}
 
 
 def _load_usage():
@@ -1432,6 +1458,9 @@ def _load_usage():
                 _USAGE["models"] = {
                     k: m for k, m in models.items() if isinstance(m, dict)
                 }
+            _USAGE["lifetime"] = _coerce_lifetime(
+                d.get("lifetime") if isinstance(d, dict) else None
+            )
         except Exception:
             print("[si] usage.json unreadable; starting fresh", flush=True)
 
@@ -1489,6 +1518,7 @@ def _metrics_tick():
 
     # -- rates (counter-delta, reset-safe) ---------------------------------
     decode_tps = total_tps = None
+    usage_dirty = False
     with METRICS_LOCK:
         if (
             prev_ts
@@ -1500,6 +1530,17 @@ def _metrics_tick():
             if dt > 0:
                 decode_tps = (gen - prev_gen) / dt
                 total_tps = (gen + prompt - prev_gen - prev_prompt) / dt
+                # Lifetime decode-speed accumulator: count only intervals in
+                # which generation actually advanced, so idle time does not
+                # drag the lifetime average down.
+                if gen > prev_gen:
+                    lt = _USAGE["lifetime"]
+                    lt["decode_tokens"] += gen - prev_gen
+                    lt["active_seconds"] += dt
+                    if lt["first_at"] is None:
+                        lt["first_at"] = now
+                    lt["last_at"] = now
+                    usage_dirty = True
         _RATE["last_ts"] = now
         _RATE["last_gen"] = gen
         _RATE["last_prompt"] = prompt
@@ -1534,7 +1575,7 @@ def _metrics_tick():
                     entry["generation"] += d_gen
                     entry["prompt"] += d_prompt
                     entry["last_at"] = now
-                    _save_usage()
+                    usage_dirty = True
             if _RUN_BASELINE["model"] != model_name:
                 # New model run: session counters restart from here.
                 _RUN_BASELINE.update(
@@ -1543,6 +1584,8 @@ def _metrics_tick():
                     prompt_at_start=prompt,
                     since=now,
                 )
+        if usage_dirty:
+            _save_usage()
     _PREV.update(gen=gen, prompt=prompt, model=model_name, ts=now)
 
     # -- snapshot pieces -----------------------------------------------------
@@ -1606,6 +1649,13 @@ def _metrics_tick():
             ),
             key=lambda m: -m["total"],
         )
+        lifetime = dict(_USAGE["lifetime"])
+        lifetime["avg_decode_tps"] = (
+            round(lifetime["decode_tokens"] / lifetime["active_seconds"], 2)
+            if lifetime["active_seconds"] > 0
+            else None
+        )
+        lifetime_total = sum(m["total"] for m in by_model)
         METRICS.update(
             ok=True,
             reason=None,
@@ -1621,6 +1671,7 @@ def _metrics_tick():
                 "server_start_time": start_time,
                 "uptime_s": round(now - start_time, 1) if start_time else None,
             },
+            lifetime=lifetime,
             throughput={
                 "decode_tps": round(decode_tps, 2) if decode_tps is not None else None,
                 "total_tps": round(total_tps, 2) if total_tps is not None else None,
@@ -1675,6 +1726,7 @@ def _metrics_tick():
                 "prompt": prompt,
                 "generation": gen,
                 "total": prompt + gen,
+                "lifetime_total": lifetime_total,
                 "cached_prompt": _prom_get(samples, "ninfer_prompt_tokens_cached_total"),
                 "session": {
                     "model": _RUN_BASELINE["model"],
@@ -1703,6 +1755,45 @@ def metrics_snapshot():
     """Latest collector snapshot (deep copy, safe to serialize)."""
     with METRICS_LOCK:
         return json.loads(json.dumps(METRICS))
+
+
+def clear_stats():
+    """Full clean slate: reset the persisted per-model ledger, the lifetime
+    decode-speed accumulator, and all in-memory rate state. Counters re-baseline
+    from the service's current values, so the next tick counts only tokens
+    generated after the clear."""
+    with METRICS_LOCK:
+        _USAGE["models"] = {}
+        _USAGE["lifetime"] = _fresh_lifetime()
+        now = time.time()
+        # Re-baseline from the service's current counters (last observed) so the
+        # next tick measures only post-clear activity.
+        _RATE["last_ts"] = now
+        # _RATE["last_gen"] / _RATE["last_prompt"] keep their current values.
+        _RATE["ema_decode"] = None
+        _RATE["history"].clear()
+        _RUN_BASELINE.update(model=None, gen_at_start=0.0, prompt_at_start=0.0, since=None)
+        _PREV.update(
+            gen=_RATE["last_gen"],
+            prompt=_RATE["last_prompt"],
+            model=_PREV["model"],
+            ts=now,
+        )
+        # Refresh the live snapshot so the cleared state is visible immediately
+        # (metrics_snapshot() reads METRICS, not _USAGE).
+        lt = dict(_USAGE["lifetime"])
+        lt["avg_decode_tps"] = None
+        METRICS["lifetime"] = lt
+        if isinstance(METRICS.get("tokens"), dict):
+            METRICS["tokens"]["lifetime_total"] = 0.0
+        METRICS["throughput"] = {
+            "decode_tps": None,
+            "total_tps": None,
+            "decode_tps_avg": None,
+            "history": [],
+        }
+        _save_usage()
+    return metrics_snapshot()
 
 
 # ---------------------------------------------------------------------------
@@ -1820,6 +1911,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, tail_logs(qs))
             if method == "GET" and api == "metrics":
                 return self._json(200, metrics_snapshot())
+            if method == "POST" and api == "stats/clear":
+                return self._json(200, clear_stats())
             if method == "GET" and api == "logs/stream":
                 return self._sse(qs)
             return self._json(404, {"error": "no such api: %s %s" % (method, api)})
