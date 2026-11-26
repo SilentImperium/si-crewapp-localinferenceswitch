@@ -150,10 +150,6 @@ function makeBar() {
       whiteSpace: "nowrap",
       color: "#67e8f9",
       fontSize: 11,
-      padding: "1px 8px",
-      borderRadius: 999,
-      border: "1px solid rgba(34,211,238,.3)",
-      background: "rgba(34,211,238,.06)",
       display: "none",
     }),
     line: el("span", {
@@ -365,31 +361,40 @@ function render() {
   }
 }
 
-// The compact "avg tok/s · model" chip in the bar. Shown only when the
-// ninfer service is reachable; it degrades to a red "offline" pill when the
-// collector reports the service is down.
+// The compact "tok/s · model" chip in the bar. Shown only when the
+// ninfer service is reachable; it degrades to a red "offline" label when
+// the collector reports the service is down. Flat text (no box) so it
+// reads as part of the bar, not a floating overlay.
 function renderMetricsChip() {
   if (!els || !metricsCache) {
     if (els) els.metrics.style.display = "none"
     return
   }
   const m = metricsCache
+  const f = (x) => (x == null ? "?" : fmtTps(x))
   if (m.ok && m.throughput) {
     const t = m.throughput
-    const avg = t.decode_tps_avg != null ? fmtTps(t.decode_tps_avg) : fmtTps(t.decode_tps)
+    const avg = t.decode_tps_avg != null ? t.decode_tps_avg : t.decode_tps
+    // Primary number: total (decode + prefill) while the service is busy,
+    // so it matches the "prefill N tok/s" in the log line beside it
+    // instead of reading "0.0" mid-prefill; the decode average otherwise.
+    const primary =
+      t.total_tps != null && t.total_tps > 0 && (avg == null || t.total_tps >= avg)
+        ? t.total_tps
+        : avg
     const model = (m.model && m.model.name) || ""
-    els.metrics.textContent = `${avg} tok/s${model ? " · " + model : ""}`
-    els.metrics.title = `decode ${fmtTps(t.decode_tps)} tok/s now · total ${fmtTps(t.total_tps)} tok/s · avg ${avg} tok/s`
+    if (primary == null) {
+      els.metrics.style.display = "none"
+      return
+    }
+    els.metrics.textContent = `${fmtTps(primary)} tok/s${model ? " · " + model : ""}`
+    els.metrics.title = `total ${f(t.total_tps)} tok/s · decode now ${f(t.decode_tps)} · decode avg ${f(avg)}`
     els.metrics.style.color = "#67e8f9"
-    els.metrics.style.borderColor = "rgba(34,211,238,.3)"
-    els.metrics.style.background = "rgba(34,211,238,.06)"
     els.metrics.style.display = ""
   } else if (m.ok === false) {
     els.metrics.textContent = "ninfer offline"
     els.metrics.title = m.reason || "service unreachable"
     els.metrics.style.color = "#f87171"
-    els.metrics.style.borderColor = "rgba(248,113,113,.4)"
-    els.metrics.style.background = "rgba(248,113,113,.08)"
     els.metrics.style.display = ""
   } else {
     els.metrics.style.display = "none"

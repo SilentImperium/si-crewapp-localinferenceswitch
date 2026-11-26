@@ -479,6 +479,8 @@ function ProfileForm({ initial, busy, errors, onClose, onSave }) {
 
 // Hand-rolled canvas sparkline (no chart lib): decode line (solid, glowing)
 // over a faint dashed total line, with an area fill. `data` = [ts, decode, total][].
+// Each series scales to its own max (a prefill tick spikes total into the
+// thousands while decode sits at 0; a shared scale would flatten decode).
 function Sparkline({ data = [], width = 280, height = 64, color = "#22d3ee", faint = "#a855f7" }) {
   const ref = useRef(null)
   useEffect(() => {
@@ -504,9 +506,15 @@ function Sparkline({ data = [], width = 280, height = 64, color = "#22d3ee", fai
       return
     }
 
-    const maxV = Math.max(1, ...pts.map((p) => Math.max(p[1] || 0, p[2] || 0)))
+    // Scale each series to its OWN max: a prefill tick spikes `total` to
+    // thousands of t/s while `decode` sits at 0, and a shared scale would
+    // flatten the decode line to the chart floor (it would look dead while
+    // "DECODE NOW" shows a healthy rate).
+    const maxDecode = Math.max(1, ...pts.map((p) => p[1] || 0))
+    const maxTotal = Math.max(1, ...pts.map((p) => p[2] || 0))
     const px = (i) => (i / (pts.length - 1)) * width
-    const py = (v) => height - 3 - (v / maxV) * (height - 8)
+    const pyD = (v) => height - 3 - ((v || 0) / maxDecode) * (height - 8)
+    const pyT = (v) => height - 3 - ((v || 0) / maxTotal) * (height - 8)
 
     // faint horizontal grid
     ctx.strokeStyle = "rgba(148,163,184,.10)"
@@ -524,7 +532,7 @@ function Sparkline({ data = [], width = 280, height = 64, color = "#22d3ee", fai
     grad.addColorStop(1, color + "00")
     ctx.beginPath()
     ctx.moveTo(0, height)
-    pts.forEach((p, i) => ctx.lineTo(px(i), py(p[1] || 0)))
+    pts.forEach((p, i) => ctx.lineTo(px(i), pyD(p[1])))
     ctx.lineTo(width, height)
     ctx.closePath()
     ctx.fillStyle = grad
@@ -534,7 +542,7 @@ function Sparkline({ data = [], width = 280, height = 64, color = "#22d3ee", fai
     ctx.strokeStyle = faint + "88"
     ctx.setLineDash([3, 3])
     ctx.beginPath()
-    pts.forEach((p, i) => (i ? ctx.lineTo(px(i), py(p[2] || 0)) : ctx.moveTo(px(0), py(p[2] || 0))))
+    pts.forEach((p, i) => (i ? ctx.lineTo(px(i), pyT(p[2])) : ctx.moveTo(px(0), pyT(p[2]))))
     ctx.stroke()
     ctx.setLineDash([])
 
@@ -544,7 +552,7 @@ function Sparkline({ data = [], width = 280, height = 64, color = "#22d3ee", fai
     ctx.shadowColor = color
     ctx.shadowBlur = 6
     ctx.beginPath()
-    pts.forEach((p, i) => (i ? ctx.lineTo(px(i), py(p[1] || 0)) : ctx.moveTo(px(0), py(p[1] || 0))))
+    pts.forEach((p, i) => (i ? ctx.lineTo(px(i), pyD(p[1])) : ctx.moveTo(px(0), pyD(p[1]))))
     ctx.stroke()
     ctx.shadowBlur = 0
   }, [data, width, height, color, faint])

@@ -32,6 +32,15 @@ command line plus a working directory, extra environment and a shell mode.
   a `.ninfer` model marker in the command line), shown as an amber
   **outside app** chip, and Stop adopts and stops it. After a backend
   restart, a still-running managed process is re-adopted from `run.json`.
+  Adopted records are *verified*, not trusted blindly: on Windows (where pids
+  get reused) a `run.json` pid is only accepted when the live process's
+  command line still carries the profile's marker token, and a record whose
+  service has died in the meantime (e.g. `wsl --shutdown`) is discarded. A
+  background watcher keeps adopted records fresh — when the service dies
+  out-of-band the record is cleared automatically, so Start is never blocked
+  by a ghost. And when the backend itself shuts down it only stops processes
+  it spawned and is still attached to; adopted/external services keep
+  running.
 - **Live output** — everything the process prints (stdout + stderr merged) is
   captured and streamed (SSE with an automatic 2 s polling fallback) to:
   - the app page's **Live output** panel,
@@ -83,8 +92,10 @@ cadence as the existing state polling.
 When the service is down the dashboard shows a single **NINFER OFFLINE**
 card with the reason (no service running, no known port, or unreachable)
 and reconnects automatically when the service comes back. The persistent
-bottom bar and the Ninfer Log side panel show a compact "avg tok/s ·
-model" chip / strip from the same endpoint.
+bottom bar and the Ninfer Log side panel show a compact "tok/s · model"
+chip / strip from the same endpoint (the bar's chip leads with total
+throughput — decode + prefill — so it agrees with the live log line
+during prefills instead of reading "0.0").
 
 **Data files.** The per-model ledger and the lifetime decode-speed
 accumulator are persisted to `data/usage.json` (atomic writes), so lifetime
@@ -195,8 +206,8 @@ explicitly here.
 
 - App data: `~/.kiro/crew/apps/si-crewapp-localinferenceswitch/data/`
   - `state.json` — profiles, last-started profile, last exit
-  - `run.json` — written while a process is managed (used for re-adoption
-    after a backend restart)
+  - `run.json` — written while a process is managed (used for verified
+    re-adoption after a backend restart; stale records are discarded)
   - `usage.json` — the token ledger + lifetime decode-speed accumulator behind the live dashboard
     (prompt / generation totals per model, lifetime tokens per active
      decode second, atomic writes)

@@ -58,7 +58,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 APP_NAME = os.environ.get("KIROCREW_APP_NAME", "si-crewapp-localinferenceswitch")
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 PROXY_SECRET = os.environ.get("KIROCREW_PROXY_SECRET", "")
 MAX_SKEW_S = 60
 LOG_RING_SIZE = 2000
@@ -164,20 +164,32 @@ def tail_logs(qs):
 
 IS_WINDOWS = os.name == "nt"
 
+if IS_WINDOWS:
+    import ctypes
+
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _PROC_QUERY_LIMITED_INFORMATION = 0x0800
+    _ERROR_ACCESS_DENIED = 5
+else:
+    _KERNEL32 = None
+
 
 def _pid_alive(pid):
     """True when the pid is a live (non-zombie) process (cross-platform)."""
     if not pid:
         return False
     if IS_WINDOWS:
-        # On Windows, signal 0 checks for existence (no zombie state to worry
-        # about - the OS reaps automatically).
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except (PermissionError, OSError):
-            return True
+        # os.kill(pid, 0) is not a reliable existence test on Windows: for a
+        # dead pid it raises OSError (WinError 87) rather than
+        # ProcessLookupError, so it reports dead pids as alive. OpenProcess
+        # is reliable (zombies do not exist on Windows).
+        h = _KERNEL32.OpenProcess(
+            _PROC_QUERY_LIMITED_INFORMATION, False, int(pid)
+        )
+        if h == 0:
+            # 5 == ERROR_ACCESS_DENIED: the process exists but is protected.
+            return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+        _KERNEL32.CloseHandle(h)
         return True
     try:
         data = Path("/proc/%d/stat" % pid).read_text()
@@ -406,6 +418,29 @@ def _windows_processes():
     _WIN_PROCS_CACHE["at"] = now
     _WIN_PROCS_CACHE["procs"] = procs
     return procs
+
+
+def _windows_cmdline(pid):
+    """The command line of a single Windows process ("" when it is gone)."""
+    if not pid:
+        return ""
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"ProcessId=%d\" | "
+        "ForEach-Object { $_.CommandLine }" % int(pid)
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            timeout=15,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).stdout or ""
+    except Exception:
+        return ""
+    return out.strip()
 
 
 def _windows_service_pid(prof):
@@ -801,8 +836,17 @@ def stop_process(grace_s=DEFAULT_STOP_GRACE_S):
                 "[si] adopting externally-started service (pid %d, profile '%s') to stop it"
                 % (pid, prof.get("name"))
             )
+            # Adopted records have no attached child, so nothing else
+            # re-checks them: a watcher clears the record when the service
+            # eventually dies (e.g. after wsl --shutdown).
+            threading.Thread(target=_watcher, args=(RUN,), daemon=True).start()
         info, still = _stop_locked(grace_s)
         if still:
+            # A failed stop detaches the record, and its original watcher
+            # exits at that point - keep tracking it. Skipped when this
+            # record was just adopted above (its watcher is already running).
+            if RUN is not None and not RUN.get("readopted"):
+                threading.Thread(target=_watcher, args=(RUN,), daemon=True).start()
             return {
                 "stopped": False,
                 "running": True,
@@ -817,6 +861,22 @@ def start_process(profile_id, stop_current):
     """Returns (run_record, ApiError-or-None)."""
     global RUN
     with LOCK:
+        run = RUN
+    # A detached record (re-adopted from run.json, or an external service
+    # adopted by Stop) can go stale when the service dies out-of-band (e.g.
+    # wsl --shutdown). Re-verify liveness before refusing to start. The
+    # check runs outside the lock: for wsl.exe-wrapper profiles without a
+    # port it spawns wsl.exe, which can take several seconds.
+    if run is not None and not run.get("attached") and not _service_signal_alive(run):
+        with LOCK:
+            if RUN is run:
+                _append_line(
+                    "[si] tracked record for '%s' is stale (service no longer running); cleared"
+                    % (run.get("profile_name") or "process")
+                )
+                RUN = None
+                _delete_run_file()
+    with LOCK:
         if RUN is not None:
             if not stop_current:
                 return None, ApiError(
@@ -827,6 +887,10 @@ def start_process(profile_id, stop_current):
                 )
             info, still = _stop_locked(DEFAULT_STOP_GRACE_S)
             if still:
+                # A failed stop detaches the record, and its original
+                # watcher exits at that point - keep tracking it.
+                if not RUN.get("readopted"):
+                    threading.Thread(target=_watcher, args=(RUN,), daemon=True).start()
                 return None, ApiError(
                     409,
                     "could not stop the running service (pid %d); it is still alive - "
@@ -1024,9 +1088,15 @@ def _delete_run_file():
 def reconcile():
     """Re-adopt a managed process still alive after a backend restart, or a
     service matching a profile that was started outside the app."""
-    if _reconcile_run_file():
-        return
-    _reconcile_external()
+    if not _reconcile_run_file():
+        _reconcile_external()
+    with LOCK:
+        run = RUN
+    if run is not None:
+        # Adopted records have no attached child, so nothing else re-checks
+        # them: a watcher clears the record when the service dies
+        # out-of-band (e.g. wsl --shutdown) instead of blocking Start.
+        threading.Thread(target=_watcher, args=(run,), daemon=True).start()
 
 
 def _reconcile_run_file():
@@ -1047,6 +1117,20 @@ def _reconcile_run_file():
     if not pid or not _pid_alive(pid):
         _delete_run_file()
         return False
+    # Windows pids get reused, so a live pid is not proof it is the tracked
+    # process (the /proc start-ticks guard below cannot work on Windows).
+    # When the tracked command has a marker token, the process must still
+    # carry it in its command line.
+    if IS_WINDOWS:
+        marker = _profile_marker({"command": data.get("command")})
+        if marker and marker not in _windows_cmdline(pid):
+            print(
+                "[si] run.json pid %d no longer matches the tracked command; discarding"
+                % pid,
+                flush=True,
+            )
+            _delete_run_file()
+            return False
     ticks = _read_stat_field(pid, 22)
     if data.get("start_ticks") not in (None, ticks):
         print("[si] run.json pid %d belongs to another process; discarding" % pid, flush=True)
@@ -2013,12 +2097,14 @@ def _handle_term(signum, frame):
 
 
 def _shutdown():
-    # Stop only the process we track - never adopt an externally-started
-    # service here: the app dying must not kill a service the user started
-    # outside the app.
+    # Stop only a process this backend spawned and is still attached to.
+    # Adopted / detached records (re-adopted from run.json, externally
+    # started services, wsl.exe sentinels) are left alone: the app dying
+    # must not kill a service the user runs - e.g. a live ninfer that
+    # reconcile() adopted at startup.
     try:
         with LOCK:
-            if RUN is not None:
+            if RUN is not None and RUN.get("attached") and RUN.get("proc") is not None:
                 _stop_locked(5.0)
     except Exception:
         pass
@@ -2047,9 +2133,11 @@ def main():
     try:
         SERVER.serve_forever(poll_interval=0.5)
     finally:
+        # Same rule as _shutdown: only stop a process we spawned and are
+        # still attached to, never an adopted/detached service.
         try:
             with LOCK:
-                if RUN is not None:
+                if RUN is not None and RUN.get("attached") and RUN.get("proc") is not None:
                     _stop_locked(3.0)
         except Exception:
             pass
