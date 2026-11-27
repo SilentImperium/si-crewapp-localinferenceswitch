@@ -656,7 +656,7 @@ function CardTitle({ icon, children }) {
   )
 }
 
-function MetricsDashboard() {
+function MetricsDashboard({ serverUp = false, stopBusy = false, onStop }) {
   const [m, setM] = useState(null)
   const [clearing, setClearing] = useState(false)
 
@@ -702,6 +702,19 @@ function MetricsDashboard() {
       ),
     m && !m.ok && h(Chip, { tone: "#f87171", bg: "rgba(248,113,113,.1)" }, "offline"),
     h("span", { style: { flex: 1 } }),
+    serverUp &&
+      h(
+        Button,
+        {
+          kind: "danger",
+          small: true,
+          disabled: stopBusy,
+          title: "Stop the running inference server",
+          onClick: onStop,
+        },
+        h(Square, { size: 12 }),
+        "Stop"
+      ),
     h(
       Button,
       {
@@ -1401,65 +1414,6 @@ export default function SILocalInferencingApp() {
       )
     : null
 
-  // Shown in place of the command profiles while a server is up: the running
-  // profile (or the detected outside-app service) with a single Stop button.
-  const runningCard = serverUp
-    ? h(
-        "div",
-        {
-          key: "running-card",
-          className: "zli-card zli-fade-up zli-heartbeat",
-          style: {
-            ...GLASS_CARD,
-            borderColor: "rgba(52,211,153,.55)",
-            marginTop: 20,
-            padding: 16,
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-          },
-        },
-        h(
-          "div",
-          { style: { display: "flex", alignItems: "center", gap: 8 } },
-          h(Dot, { tone: "#34d399", pulse: true }),
-          h(
-            "span",
-            { style: { fontWeight: 600, fontSize: 14, flex: 1, color: "#e2e8f0" } },
-            proc.running
-              ? proc.profile_name || "process"
-              : state.service_detected.profile_name || "detected service"
-          ),
-          proc.running
-            ? h(Chip, { tone: "#34d399", bg: "rgba(52,211,153,.1)" }, "RUNNING")
-            : h(Chip, { tone: "#fbbf24", bg: "rgba(251,191,36,.1)" }, "OUTSIDE APP")
-        ),
-        h(
-          "div",
-          { style: { fontSize: 11, color: "#64748b", fontFamily: MONO } },
-          proc.running
-            ? `pid ${proc.pid} · up ${fmtDur(uptime)}${
-                proc.attached === false ? " · detached" : ""
-              }${proc.readopted ? " · adopted" : ""}`
-            : `pid ${state.service_detected.pid} — started outside the app; Stop will adopt and stop it`
-        ),
-        h(
-          "div",
-          { style: { display: "flex", gap: 8, marginTop: 4 } },
-          h(
-            Button,
-            {
-              kind: "danger",
-              disabled: busy,
-              onClick: doStop,
-            },
-            h(Square, { size: 13 }),
-            "Stop"
-          )
-        )
-      )
-    : null
-
   return h(
     "div",
     {
@@ -1592,13 +1546,15 @@ export default function SILocalInferencingApp() {
         },
         error
       ),
-    // live dashboard (ninfer /metrics)
-    h(MetricsDashboard),
+    // live dashboard (ninfer /metrics) — carries the Stop button while a
+    // server is up, next to "Clear stats"
+    h(MetricsDashboard, { serverUp, stopBusy: busy, onStop: doStop }),
     // command profiles — hidden while a server is up (a managed process, or a
-    // service detected outside the app); only the Stop card is shown. The
-    // profiles reappear as soon as no inference server is detected.
+    // service detected outside the app); the Stop button lives in the
+    // dashboard header above. The profiles reappear as soon as no inference
+    // server is detected.
     serverUp
-      ? runningCard
+      ? null
       : [
           h(
             "div",
